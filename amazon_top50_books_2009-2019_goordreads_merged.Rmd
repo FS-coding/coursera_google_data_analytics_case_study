@@ -1,0 +1,521 @@
+---
+title: "Google Data Analytics certificate Case project: Amazon Top 50 Bestselling Books 2009 - 2019"
+author: "Fernando A. Scelzo"
+date: '2022-06-19'
+output: html_document
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+This is my analysis of the data set on Amazon's Top 50 bestselling books from 2009 to 2019[^1], scrapped on October 2020. It contains 550 books, the data has been
+categorized into fiction and non-fiction.
+
+[^1]: <https://www.kaggle.com/datasets/sootersaalu/amazon-top-50-bestselling-books-2009-2019>
+
+As the data was limited in some aspects, e.g. genre, the original data
+set was combined with a Goodreads Books data set[^2] to include other
+specific genres, and number of pages. Other information was discarded.
+
+[^2]: <https://www.kaggle.com/datasets/austinreese/goodreads-books>
+
+### Tools and methodology.
+
+The data sets (in .csv format) were cleaned using Google's Spreadsheets,
+and merged using SQL through Google's Big Query, for marching book titles. While Amazon (AMZ) data set is divided into genre vs. fiction, Goodreads books (GR)
+data set includes more specific genres, raked according to users'
+votes, so the main specific genre was extracted based on maximum number
+of votes.
+
+Some missing page numbers were added, by searching directly on Amazon's
+website. Similarly, price 0 entries were corrected - it was assumed
+price belonged to eBooks, so the printed version was chosen.
+
+Repeated entries in the AMZ set were left, as they correspond to the
+book being in the Top 50 in different years. Contrarily, duplicates in
+the GR set correspond to different editions, so their values were
+averaged. All column names were lower-cased. The new table was thus:
+
+      * amazon.Name as title: Name of the book
+      * amazon.Author as author: The author of the Book
+      * amazon.User_Rating as amz_rating: Amazon User Rating
+      * amazon.Reviews as amz_reviews: Number of written reviews on Amazon
+      * Average of goodreads.average_rating as gr_rating: Goodreads Books User Rating
+      * Average of goodreads.review_count as gr_reviews: Number of written reviews on Goodreads Books
+      * amazon.Price as price: The price of the book (As at 13/10/2020)
+      * amazon.Year as year: The Year(s) it ranked on Amazon's bestseller list
+      * amazon.Genre as genre: Whether fiction or non-fiction
+      * goodreads.genre as gr_genre: Specific genres, as voted by Goodreads Books Users
+      * goodreads.number_of_pages as num_pages: Number of pages
+
+### SQL Queries:
+
+-   Deleted GR duplicates choosing genre based on max votes:
+
+    ``` {(sql)}
+    WITH trimmed_gr AS (SELECT DISTINCT title as new_title, 
+    MAX(SAFE_CAST(votes as INT)) as max_votes -- Removes duplicates, choosing genre based on max votes
+
+    FROM 
+    `amazon_books.goodreads` GROUP BY title)
+
+    SELECT
+    *
+
+    FROM 
+    amazon_books.goodreads as goodreads 
+    INNER JOIN trimmed_gr 
+    ON goodreads.title = trimmed_gr.new_title 
+    WHERE SAFE_CAST(goodreads.votes as INT) = trimmed_gr.max_votes 
+    ORDER BY title
+    ```
+
+-   Data sets merged (INNER JOIN):
+
+    ``` {(sql)}
+    SELECT 
+    amazon.Name as title, 
+    amazon.Author as author, 
+    AVG(amazon.User_Rating) as amz_rating, 
+    AVG(amazon.Reviews) as amz_reviews, 
+    AVG(goodreads.average_rating) as gr_rating, 
+    AVG(goodreads.review_count) as gr_reviews, 
+    AVG(amazon.Price) as price, 
+    amazon.Year, amazon.Genre, 
+    goodreads.genre, 
+    AVG(SAFE_CAST(goodreads.number_of_pages as INT)) as num_pages,
+
+    FROM 
+    `amazon_books.bestsellers` as amazon 
+    INNER JOIN 
+    `amazon_books.goodreads_trimmed` as goodreads 
+    ON amazon.Name = goodreads.title
+
+    GROUP BY 
+    amazon.Name, 
+    amazon.Author, 
+    amazon.Year, 
+    amazon.Genre, 
+    goodreads.genre
+
+    ORDER BY 
+    amazon.Name
+    ```
+
+## Analysis
+
+```{r libraries, include=FALSE}
+library(tidyverse)
+library(readr)
+library(ggpubr)
+library(Tmisc)
+library(ggthemes)
+```
+
+```{r Load CSV, echo=FALSE}
+amazon_goodreads_merged <- read_csv("amazon_top50_books_2009-2019_goordreads_merged - amazon-goodreads-merged.csv", 
+    col_types = cols(year = col_integer(), 
+        num_pages = col_integer()))
+#glimpse(amazon_goodreads_merged)
+```
+
+The new (merged) data set thus contains the following columns:
+
+```{r}
+colnames(amazon_goodreads_merged)
+```
+
+### Starting questions:
+
+-   What are the most popular books and authors for the years 2009-2019?
+-   Do average user ratings vary with time, or by genre, etc?
+-   Are AMZ ratings different to GR's?
+-   Is there any relation between book price or number of pages and book
+    rating?
+-   What's the average price? Has it changed over time?
+
+## Most popular books
+
+### Number of times a book has been in the Top 50
+
+```{r Most popular books table, echo=FALSE, message=FALSE, warning=FALSE}
+amazon_goodreads_merged %>%
+  group_by(title, amz_reviews) %>%
+  summarise(count = n()) %>%
+  arrange(-count) %>% 
+  #filter(count > 2)
+  head(n = 10)
+
+```
+
+```{r Most popular books, echo=FALSE}
+amazon_goodreads_merged %>%
+  group_by(title, amz_reviews) %>%
+  summarise(count = n()) %>%
+  arrange(-count) %>% 
+  head(n = 10) %>% 
+  ggplot(aes(x=reorder(title, count), y=count,fill=amz_reviews)) + 
+  geom_bar(stat = 'identity')+
+  theme_minimal()+
+  coord_flip()+
+  scale_x_discrete(label=function(x) str_trunc(x, 30))+
+  labs(title="Number of times a book has been in the Top 50",
+        y ="Count", x = "Book", fill="Reviews")+
+  scale_fill_gradient2(low="yellow", mid="coral", high="red", midpoint=15000)
+  
+
+
+```
+
+## Most popular authors
+
+### Number of times an author has been in the Top 50, by genre
+
+```{r Most popular authors, echo=FALSE, message=FALSE}
+author_count <- amazon_goodreads_merged %>%
+  group_by(author, genre) %>%
+  summarise(count = n()) %>%
+  arrange(-count) %>% 
+  head(n = 10)
+  
+
+
+author_count
+```
+
+```{r Number of years an author has been in the Top 50, divided by genre, echo=FALSE}
+ggplot(author_count, aes(x=reorder(author, count), y=count,fill=genre)) + 
+  geom_bar(stat = 'identity')+
+  theme_minimal()+
+  #theme(legend.position="top")+
+  coord_flip()+
+  labs(title="Number of years an author has been in the Top 50, by genre",
+       x = "Book", fill="Genre")
+
+```
+
+## Ratings
+
+### Most common rating
+
+```{r Most common rating, echo=FALSE}
+ratings_count <- amazon_goodreads_merged %>% 
+  group_by(amz_rating) %>%
+  summarise(count_r = n()) %>% 
+  arrange(amz_rating)
+
+ratings_count
+```
+
+```{r Rating frequency - by genre, echo=FALSE}
+ggplot(amazon_goodreads_merged, aes(amz_rating, fill=genre)) + 
+  geom_bar()+
+  theme_minimal()+
+  theme(legend.position="top")+
+  labs(title="Rating frequency by genre",
+        y ="Count", x = "AMZ rating", fill="Reviews")+
+  theme_dark()+
+  theme(plot.title = element_text(hjust = 0.5)) # centers title
+  
+```
+
+### Rating by year
+
+```{r Hea tmap of genre rating - by year, echo=FALSE}
+
+ggplot(amazon_goodreads_merged, aes(x=year, y=genre, fill= amz_rating)) + 
+  geom_tile()+
+  scale_fill_gradient2(low="white", mid="yellow", high="red",
+                       midpoint=4.3)+
+  scale_x_continuous(breaks=c(2009,2010,2011,2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019))+
+   theme_minimal()+
+  labs(title=" Heatmap of genre rating by year", fill="Rating")
+
+
+  
+```
+
+
+### Amazon ratings vs Goodreads ratings
+
+How are books rated differently by Amazon and Goodreads users?
+
+```{r AMZ vs GR ratings, echo=FALSE}
+#erase x names
+ggplot(data=amazon_goodreads_merged, aes(x=reorder(title, year))) + 
+  geom_line(aes(y=gr_rating, group=1), color="darkturquoise", size=1.5)+
+  geom_line(aes(y=amz_rating, group=1), color="darkgoldenrod1", size=1.5)+
+  theme_classic()+
+  ylim(0,5)+
+  labs(title="AMZ rating vs GR rating compared", y="Rating", x="Books by year")+
+  theme(axis.text.x = element_text(size = 5, angle = 90))+
+  scale_x_discrete(label = function(x) stringr::str_trunc(x, 12))
+  
+```
+
+--------------------------------------------------------------------------------------------------------------------
+
+[Aside. Google Spreadsheet does a better-looking graphic in this case]
+
+![](images/paste-8142B317.png)
+
+--------------------------------------------------------------------------------------------------------------------
+
+### AMZ vs GR ratings correlation
+
+```{r AMZ vs GR ratings correlation table, echo=FALSE}
+
+amazon_goodreads_merged %>% 
+  summarise("Average AMZ rating" = mean(amz_rating), "Average GR rating" = mean(gr_rating), "Correlation" = cor(amz_rating, gr_rating))
+```
+
+```{r AMZ vs GR ratings correlation chart, echo=FALSE}
+ggscatter(amazon_goodreads_merged, x = "amz_rating", y = "gr_rating", shape="genre",
+          add = "reg.line", color="steelblue", conf.int = TRUE, 
+          cor.coef = TRUE, cor.method = "pearson")+
+  labs(title="Rating correlation", y="GR rating", x="AMZ rating")+
+  theme(plot.title = element_text(hjust = 0.5)) # centers title
+      
+```
+
+### Observation
+
+While AMZ ratings are higher than the (averaged) GR ratings there's a
+strong correlation between the two. For simplicity, following analysis
+will be done using the original rating (AMZ).
+
+
+
+## Prices and number of pages
+### Price distribution by year
+
+```{r Average price by year, echo=FALSE}
+price_average_year <- amazon_goodreads_merged %>%
+  group_by(year) %>%
+  summarise(Average_price=round(mean(price), digits=2)) %>%
+  arrange(year)
+
+price_average_year
+
+```
+
+```{r echo=FALSE}
+amazon_goodreads_merged %>% 
+  group_by(year, genre) %>% 
+  summarise(ap=mean(price)) %>% 
+  ggplot(aes(x = year, y = ap, color = genre)) +
+  geom_path(size=2)+
+  labs(title="Average prices by year and genre", y="Price", x="")+
+  scale_x_continuous(breaks=c(2009,2010,2011,2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019))+
+  theme_economist()
+```
+
+
+
+```{r Price distribution by year, echo=FALSE}
+ggplot(data=amazon_goodreads_merged, aes(x=year))+
+  geom_point(aes(y=price, colour=genre), size=2.5)+
+  scale_x_continuous(breaks=c(2009,2010,2011,2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019))+
+  geom_smooth(aes(y=price), size=0.5, color="limegreen")+
+  theme_dark()
+
+```
+
+### Price vs rating relationship
+
+```{r, echo=FALSE}
+ggplot(data=amazon_goodreads_merged, aes(x=price, y=amz_rating, color=genre)) + 
+  geom_point(size=4)+
+  ylim(3,5)+
+  scale_color_brewer(palette="Set3")+
+  labs(title="Price vs rating", y="Rating", x="Price")
+```
+
+```{r eval=FALSE, include=FALSE}
+ggscatter(amazon_goodreads_merged, x = "price", y = "amz_rating", 
+          color="coral", size = 3, # Points color, size
+          add = "reg.line", conf.int = TRUE, 
+          add.params = list(color = "darkcyan", fill = "bisque2"), # Customize reg. line
+          cor.coef = TRUE, cor.method = "pearson")+
+  labs(title="Price vs rating correlation", y="Rating", x="Price")
+```
+
+### Price vs number of pages
+
+```{r, echo=FALSE}
+ggplot(data=amazon_goodreads_merged, aes(x=price, y=num_pages, group=1, 
+                                         color=genre)) + 
+  geom_point(size=4)+
+  labs(title="Price vs number of pages", y="Num. pages", x="Price", Fill="Year")
+  
+```
+
+```{r Rating vs number of pages by genre, echo=FALSE}
+ggplot(data=amazon_goodreads_merged, aes(x=num_pages, colour=genre)) + 
+  geom_point(aes(y=amz_rating, group=1), size=3)+
+  geom_smooth(aes(y=amz_rating), color="darkgoldenrod1", size=0.5)+
+  ylim(3,5)+
+  labs(title="Rating vs number of pages by genre", x="Number of pages", y="AMZ Rating")+
+  theme_dark()
+```
+
+## Reviews
+
+```{r, echo=FALSE}
+amazon_goodreads_merged %>% 
+  group_by("Year" = year) %>% 
+  summarise("Sum of AMZ reviews" = sum(amz_reviews), "Sum of GR reviews" = sum(gr_reviews))
+```
+
+```{r echo=FALSE}
+amazon_goodreads_merged %>% 
+  group_by(year, ) %>% 
+  summarise(amzr=sum(amz_reviews), grr=sum(gr_reviews)) %>% 
+  ggplot(aes(x = year)) +
+  geom_path(aes(y = amzr, color="Amazon"), size=2)+
+  geom_path(aes(y = grr, color="Goodreads"), size=2)+
+    scale_x_continuous(breaks=c(2009,2010,2011,2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019))+
+  labs(title="AMZ vs GR total reviews by year", x="", y="Total reviews", color="Reviews")+
+    theme_solarized()
+  
+```
+
+Unlike ratings, total review numbers is very different in both sites: GR users wrote more reviews than AMZ users for the same books - at least prior to 2019. This could be explained by the fact that despite being a subsidiary of AMZ, GR is a social cataloging website and thus users are more interested in sharing their opinion. 
+
+```{r Total reviews by genre, echo=FALSE}
+amazon_goodreads_merged %>% 
+  group_by(genre) %>% 
+  summarise("Sum of AMZ reviews" = sum(amz_reviews), "Sum of GR reviews" = sum(gr_reviews))
+
+
+
+#  mutate(percentage = round(count/sum(count)*100, digits = 2))
+```
+
+
+```{r Total reviews per year, echo=FALSE}
+ggplot(amazon_goodreads_merged, aes(x=year, y=amz_reviews, fill=genre)) + 
+  labs(title="Total (AMZ) reviews per year", y="Reviews", x="Year")+
+  geom_bar(stat='identity')+
+  theme(legend.position="top")+
+  theme(plot.title = element_text(hjust = 0.5)) + 
+  theme(axis.text.x = element_text(angle = 90)) +
+  scale_x_continuous(breaks=c(2009,2010,2011,2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019))+
+  scale_y_continuous(labels = scales::comma)+
+  facet_wrap(~genre)+
+  theme_cleveland()
+```
+### Observations
+
+Total reviews for Fiction are generally higher (especially in 2014), but slowly declining - until 2019. On the other hand, non fiction reviews were very low, but rising steadily in 2015-2019.  
+
+
+## Genre distribution
+
+```{r Genre distribution %, echo=FALSE}
+
+genre_pie <- amazon_goodreads_merged %>%
+  group_by(genre) %>%
+  summarise(count = n()) %>%
+  mutate(percentage = round(count/sum(count)*100, digits = 2))
+
+genre_pie
+
+```
+
+### Pie chart of total distribution by genre
+
+```{r Pie chart of total distrubution by genre, echo=FALSE}
+ggplot(genre_pie, aes(x = "", y = percentage, fill = genre)) +
+  geom_col() +
+  coord_polar(theta = "y", start = 0)+
+  theme_void()+
+  theme(plot.title = element_text(hjust = 0.5))+
+  labs(title="Genre distribution %")+
+  geom_text(aes(label = paste0(round(percentage,0), "%")), position = position_stack(vjust=0.5))
+
+  
+```
+### Observations
+
+55% of bestsellers belong to the general Non fiction genre. When more specific genres are added, Non fiction and fiction still remain the top categories, in that order.
+
+In contrast, Fiction books are more reviewed, as seen above.
+
+
+### Specific genre distribution %
+
+```{r Specific genre distribution, echo=FALSE}
+
+gr_pie <- amazon_goodreads_merged %>%
+  group_by(gr_genre) %>%
+  summarise(count = n()) %>%
+  mutate(percentage = round(count/sum(count)*100, digits = 2)) %>% 
+  arrange(desc(percentage))
+
+gr_pie
+
+```
+
+### Tile chart of total distribution by genre
+
+```{r Tile chart of total distribution by genre, echo=FALSE }
+ggplot(gr_pie, aes(x=count, y=gr_genre, fill= percentage)) + 
+  geom_tile()+
+  scale_fill_gradient2(low="yellow", mid="red", high="purple",
+                       midpoint=15)+
+  theme(plot.title = element_text(hjust = 0.5))+
+  labs(title="Specific genre distribution %", x="Count", y="Specific genre")
+```
+
+### Heat map of specific genre rating, by year
+
+```{r Heat map of specific genre rating, by year, echo=FALSE}
+
+ggplot(amazon_goodreads_merged, aes(x=year, y=gr_genre, fill= amz_rating)) + 
+  geom_tile()+
+  scale_fill_gradient2(low="white", mid="yellow", high="darkred",
+                       midpoint=4.3)+
+  scale_x_continuous(breaks=c(2009,2010,2011,2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019))+
+  theme(plot.title = element_text(hjust = 0.5))+
+  labs(title="Specific genre rating by year", x="Year", y="Specific genre", fill="Rating")
+
+  
+```
+
+### Specific genre ratings by year
+
+```{r Specific genre ratings by year, echo=FALSE}
+ggplot(data=amazon_goodreads_merged, aes(x=year, y=amz_rating, colour=genre)) + 
+  geom_point() +
+  facet_wrap(~gr_genre)+
+  labs(title="Specific genre rating by year", x="Years", y="Rating", fill="Rating")+
+  theme(axis.text.x = element_text(angle = 90))+
+  scale_x_continuous(breaks=c(2009,2010,2011,2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019))
+```
+
+
+```{r Total reviews by specific genre, echo=FALSE}
+ggplot(data = amazon_goodreads_merged) + 
+  stat_summary( mapping = aes(x = year, y = amz_reviews), 
+                fun.min = min, fun.max = max, fun = median, color="darkorchid")+
+  facet_wrap(~gr_genre)+
+  labs(title="Total reviews by specific genre", x="Year", y="AMZ Reviews")+
+  theme(axis.text.x = element_text(angle = 90))+
+  scale_x_continuous(breaks=c(2009,2010,2011,2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019))
+```
+
+## Points for further analysis
+
+It would be great to analyse if user ratings and purchases are affected by  format: ebook, audiobook, paperback/hardcover.
+
+User data (age, sex), and Amazon site version (country) are also not considered here, but they would make interesting points for analysis.
+
+Finally, it's worth considering how the Covid-19 Pandemic (2019-2022) affected sales, ratings, prices, etc. 
+
